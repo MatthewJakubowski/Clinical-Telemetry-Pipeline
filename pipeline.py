@@ -5,16 +5,17 @@ Integrates ASTM E1381/E1394 Stream Parsing, Real-Time PBRTQC (Bull's Algorithm),
 Westgard IQC multi-rule evaluation, and Healthcare MLOps Lot-to-Lot Drift Governance.
 """
 
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 from scipy import stats
 
 
-# 1. HARDWARE TELEMETRY INGESTION (ASTM E1394)
+# =====================================================================
+# 1. ASTM PARSER MODULE (MedBridge-ASTM-Parser)
+# =====================================================================
 class FastASTMParser:
-    """Niskopoziomowy parser ramek transmisyjnych ASTM E1381/E1394."""
+    """Low-level ASTM E1381/E1394 transmission frame parser."""
 
     @staticmethod
     def calculate_checksum(frame_body: str) -> str:
@@ -48,9 +49,11 @@ class FastASTMParser:
         return pd.DataFrame(results)
 
 
-# 2. CONTINUOUS PBRTQC (Bull's Algorithm)
+# =====================================================================
+# 2. CONTINUOUS PBRTQC MODULE (Moving-Averages-PBRTQC)
+# =====================================================================
 class BullMovingAverage:
-    """Implementacja algorytmu Bulla (X_B) dla wskaźników czerwonokrwinkowych."""
+    """Bull's Algorithm (X_B) for red blood cell index tracking."""
 
     def __init__(self, target: float = 90.0, batch_size: int = 20, max_dev_pct: float = 3.0):
         self.target = target
@@ -60,7 +63,8 @@ class BullMovingAverage:
         self.buffer: List[float] = []
 
     def ingest(self, value: float) -> Optional[Dict[str, Any]]:
-        if not (60.0 <= value <= 120.0):  # Truncation filter
+        # Truncation filter for MCV (60 - 120 fL)
+        if not (60.0 <= value <= 120.0):
             return None
 
         self.buffer.append(value)
@@ -78,14 +82,16 @@ class BullMovingAverage:
                 "estimate": round(self.current_estimate, 2),
                 "dev_pct": round(dev, 2),
                 "alarm": is_alarm,
-                "status": "🚨 ALARM" if is_alarm else "✅ STABILNY",
+                "status": "🚨 ALARM" if is_alarm else "✅ STABLE",
             }
         return None
 
 
-# 3. STATISTICAL IQC (Westgard Rules)
+# =====================================================================
+# 3. STATISTICAL IQC MODULE (Lab-QC-Guardian)
+# =====================================================================
 class WestgardGuardian:
-    """Weryfikacja reguł kontroli wewnątrzlaboratoryjnej IQC."""
+    """Deterministic Westgard statistical quality control engine."""
 
     def __init__(self, target: float, sd: float):
         self.target = target
@@ -96,15 +102,17 @@ class WestgardGuardian:
         abs_z = abs(z)
 
         if abs_z > 3.0:
-            return {"verdict": "REJECT", "rule": "1-3s", "z_score": round(z, 2)}
+            return {"verdict": "REJECT", "rule": "1-3s (Random/Critical Error)", "z_score": round(z, 2)}
         if abs_z > 2.0:
-            return {"verdict": "WARNING", "rule": "1-2s", "z_score": round(z, 2)}
+            return {"verdict": "WARNING", "rule": "1-2s (Warning Violation)", "z_score": round(z, 2)}
         return {"verdict": "PASS", "rule": None, "z_score": round(z, 2)}
 
 
-# 4. HEALTHCARE MLOPS (Reagent Lot Drift Guard)
+# =====================================================================
+# 4. REAGENT DRIFT & LOT-TO-LOT MODULE (LabDrift-Scikit-Guard)
+# =====================================================================
 class ReagentLotDriftGuard:
-    """Nadzór MLOps: Walidacja zmiany serii odczynnika (PSI + test KS)."""
+    """Healthcare MLOps: Reagent lot-to-lot and covariate drift engine."""
 
     @staticmethod
     def compute_psi(base: np.ndarray, cand: np.ndarray, num_bins: int = 10) -> float:
@@ -140,13 +148,16 @@ class ReagentLotDriftGuard:
         }
 
 
+# =====================================================================
+# MASTER CLINICAL TELEMETRY PIPELINE RUNNER
+# =====================================================================
 def run_master_pipeline() -> None:
     print("=" * 80)
     print(" 🏥 END-TO-END CLINICAL TELEMETRY PIPELINE (#FromPipetteToPython)")
     print("=" * 80)
 
-    # 1. PARSE ASTM
-    print("\n[KROK 1] Odbiór i sanityzacja strumienia ASTM E1394...")
+    # 1. PARSE ASTM TELEMETRY STREAM
+    print("\n[STEP 1] Ingesting & sanitizing raw ASTM E1394 telemetry stream...")
     raw_astm = [
         "\x021H|\\^&|||Sysmex_XN_9000||||||||E1394-97\r\x038F\r\n",
         "\x022P|1||PAT_2026_001||Kowalski^Jan||19850612|M\r\x03B2\r\n",
@@ -156,12 +167,12 @@ def run_master_pipeline() -> None:
     ]
     parser = FastASTMParser()
     df_results = parser.parse_raw_stream(raw_astm)
-    print(f"✔ Sparsowano poprawnie {len(df_results)} wyników telemetrycznych:")
+    print(f"✔ Successfully parsed {len(df_results)} telemetry results:")
     for _, row in df_results.iterrows():
-        print(f"   • Parametr: {row['test']:<10} | Wartość: {row['value']}")
+        print(f"   • Parameter: {row['test']:<10} | Value: {row['value']}")
 
-    # 2. PBRTQC
-    print("\n[KROK 2] PBRTQC: Algorytm Bulla (MCV Target = 90.0 fL, N=20)...")
+    # 2. CONTINUOUS PATIENT STREAM QC (PBRTQC)
+    print("\n[STEP 2] Real-Time PBRTQC: Bull's Algorithm (MCV Target = 90.0 fL, N=20)...")
     bull = BullMovingAverage(target=90.0, batch_size=20)
     np.random.seed(42)
     simulated_mcv_stream = np.random.normal(90.1, 2.5, 20).tolist()
@@ -172,17 +183,17 @@ def run_master_pipeline() -> None:
             bull_alarm = res
 
     if bull_alarm:
-        print(f"✔ Wyliczona średnia Bulla: {bull_alarm['estimate']:.2f} fL (Odchylenie: {bull_alarm['dev_pct']:+.2f}%)")
-        print(f"   Status partii PBRTQC: {bull_alarm['status']}")
+        print(f"✔ Calculated Bull's Mean: {bull_alarm['estimate']:.2f} fL (Deviation: {bull_alarm['dev_pct']:+.2f}%)")
+        print(f"   PBRTQC Batch Status: {bull_alarm['status']}")
 
-    # 3. IQC WESTGARD
-    print("\n[KROK 3] Tradycyjna kontrola wewnątrzlaboratoryjna IQC (Potas Target = 4.50 mmol/L, SD = 0.15)...")
+    # 3. INTERNAL QUALITY CONTROL (WESTGARD)
+    print("\n[STEP 3] Traditional Internal Quality Control IQC (Potassium Target = 4.50 mmol/L, SD = 0.15)...")
     westgard = WestgardGuardian(target=4.50, sd=0.15)
     qc_res = westgard.evaluate_sample(4.58)
-    print(f"✔ Pomiar materiału kontrolnego: 4.58 mmol/L (Z-score: {qc_res['z_score']}) ➔ Werdykt: {qc_res['verdict']}")
+    print(f"✔ Control Material Measurement: 4.58 mmol/L (Z-score: {qc_res['z_score']}) ➔ Verdict: {qc_res['verdict']}")
 
-    # 4. MLOPS DRIFT
-    print("\n[KROK 4] LabDrift MLOps: Walidacja zmiany serii odczynnika (Lot-to-Lot Governance)...")
+    # 4. MLOPS GOVERNANCE & REAGENT LOT-TO-LOT AUDIT
+    print("\n[STEP 4] LabDrift MLOps: Reagent Lot-to-Lot Transition Verification...")
     lot_base = np.random.normal(4.50, 0.25, 400)
     lot_candidate = np.random.normal(4.515, 0.25, 400)
 
@@ -190,9 +201,9 @@ def run_master_pipeline() -> None:
     report = drift_guard.validate_lot(lot_base, lot_candidate, max_bias_pct=3.0)
 
     print(f"   • Relative Bias: {report['bias_pct']:+.2f}% (Limit: ±3.0%)")
-    print(f"   • Population Stability Index (PSI): {report['psi']:.4f} (Próg stabilności: <0.10)")
-    print(f"   • Test Kołmogorowa-Smirnowa p-value: {report['p_val']:.4f}")
-    print(f"✔ Finalna decyzja audytowa (ISO 15189): {report['decision']}")
+    print(f"   • Population Stability Index (PSI): {report['psi']:.4f} (Stability Threshold: <0.10)")
+    print(f"   • Two-Sample Kolmogorov-Smirnov p-value: {report['p_val']:.4f}")
+    print(f"✔ Final Governance Audit Decision (ISO 15189): {report['decision']}")
     print("=" * 80)
 
 
